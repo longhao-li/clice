@@ -1,24 +1,26 @@
 cmake_minimum_required(VERSION 3.22)
-project(CLICE_PROJECT)
 
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+project(CLICE_PROJECT VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_PREFIX_PATH "${LLVM_INSTALL_PATH}")
-find_package(LLVM REQUIRED CONFIG)
-find_package(Clang REQUIRED CONFIG)
+include(FetchContent)
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+include(CheckCXXCompilerFlag)
 
-message(STATUS "Found LLVM: ${LLVM_DIR}, Version: ${LLVM_PACKAGE_VERSION}")
-
-# copy clang builtin headers to output directory
-if(NOT EXISTS "${CMAKE_BINARY_DIR}/lib/clang")
-    set(CLANG_BUILTIN_HEADERS_SOURCE "${LLVM_INSTALL_PATH}/lib/clang")
-    set(CLANG_BUILTIN_HEADERS_OUTPUT "${CMAKE_BINARY_DIR}/lib")
-    message(STATUS "Copying clang builtin headers to ${CLANG_BUILTIN_HEADERS_OUTPUT}")
-    file(MAKE_DIRECTORY ${CLANG_BUILTIN_HEADERS_OUTPUT})
-    file(COPY ${CLANG_BUILTIN_HEADERS_SOURCE} DESTINATION ${CLANG_BUILTIN_HEADERS_OUTPUT})
+# CMake policy CMP0135 controls extraction behavior of the FetchContent module.
+if(POLICY CMP0135)
+	cmake_policy(SET CMP0135 NEW)
+	set(CMAKE_POLICY_DEFAULT_CMP0135 NEW)
 endif()
+
+# build options
+option(CLICE_BUILD_SHARED_LIBS "Build clice core library as shared library" ON)
+option(CLICE_ENABLE_ASAN "Enable address sanitizer for clice core library" OFF)
+option(CLICE_ENABLE_TEST "Build clice unit tests" OFF)
+
+# find LLVM and clang
+include(cmake/FindLLVM.cmake)
+message(STATUS "Found LLVM: ${LLVM_DIR}, Version: ${LLVM_PACKAGE_VERSION}")
 
 # build clice core part as library
 file(GLOB_RECURSE CLICE_CORE_SOURCES
@@ -28,68 +30,148 @@ file(GLOB_RECURSE CLICE_CORE_SOURCES
     "${CMAKE_SOURCE_DIR}/src/Feature/*.cpp" 
     "${CMAKE_SOURCE_DIR}/src/Support/*.cpp"
 )
-add_library(clice-core ${CLICE_LIB_TYPE} ${CLICE_CORE_SOURCES})
 
+if(CLICE_BUILD_SHARED_LIBS)
+    add_library(clice-core SHARED ${CLICE_LIB_TYPE} ${CLICE_CORE_SOURCES})
+else()
+    add_library(clice-core STATIC ${CLICE_LIB_TYPE} ${CLICE_CORE_SOURCES})
+endif()
+add_library(clice::core ALIAS clice-core)
+
+# enable c++23 features for clice-core
+target_compile_features(clice-core PUBLIC cxx_std_23)
+
+# use pre-compiled headers to speed up compilation
 target_precompile_headers(clice-core PRIVATE 
     "${CMAKE_SOURCE_DIR}/include/Compiler/Clang.h"
 )
+
+# include directories for clice-core
 target_include_directories(clice-core PUBLIC
     ${LLVM_INCLUDE_DIRS}
-    ${CMAKE_SOURCE_DIR}/include
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
 )
+
+# compile options for clice-core
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    # disable RTTI and exceptions
+    target_compile_options(clice-core PUBLIC "-fno-rtti" "-fno-exceptions")
+
+    # enable address sanitizer if supported
+    if(CLICE_ENABLE_ASAN)
+        check_cxx_compiler_flag("-fsanitize=address" HAS_ASAN)
+        if(NOT HAS_ASAN)
+            message(WARNING "Address sanitizer is required but not supported by the compiler")
+        endif()
+
+        target_compile_options(clice-core PRIVATE "-fsanitize=address")
+    endif()
+endif()
+
 target_link_libraries(clice-core PUBLIC
-    LLVMSupport
-    LLVMFrontendOpenMP
-    clangAST
-    clangASTMatchers
-    clangBasic
-    clangDependencyScanning
-    clangDriver
-    clangFormat
-    clangFrontend
-    clangIndex
-    clangLex
-    clangSema
-    clangSerialization
-    clangTooling
-    clangToolingCore
-    clangToolingInclusions
-    clangToolingInclusionsStdlib
-    clangToolingSyntax
+    ${LLVM_LIBS}
 )
 
 # clice executable
-add_subdirectory(${CMAKE_SOURCE_DIR}/deps/libuv)
-
 set(CLICE_SERVER_SOURCES ${CMAKE_SOURCE_DIR}/src/main.cpp)
 file(GLOB_RECURSE SRC_FILES "${CMAKE_SOURCE_DIR}/src/Server/*.cpp")
 list(APPEND CLICE_SERVER_SOURCES ${SRC_FILES})
 add_executable(clice ${CLICE_SERVER_SOURCES})
 
-include_directories(
-    "${CMAKE_SOURCE_DIR}/deps/toml/include"
-    "${CMAKE_SOURCE_DIR}/deps/libuv/include"
+# include directories for clice executable
+target_include_directories(clice PRIVATE
+    "${CMAKE_SOURCE_DIR}/include"
 )
 
-target_link_libraries(clice PRIVATE clice-core uv)
+include(cmake/FindLibUV.cmake)
+include(cmake/FindTomlPlusPlus.cmake)
 
+# link external libraries
+# c++23 is automatically enabled due to clice-core feature requirements
+target_link_libraries(clice PRIVATE
+    clice-core
+    libuv::libuv
+    tomlplusplus::tomlplusplus
+)
 
 # clice tests
 if(CLICE_ENABLE_TEST)
-    add_subdirectory("${CMAKE_SOURCE_DIR}/deps/googletest")
+    enable_testing()
+
+    # build unit tests
     set(CLICE_TEST_SOURCES ${CMAKE_SOURCE_DIR}/unittests/main.cpp)
     file(GLOB_RECURSE TEST_SRC_FILES "${CMAKE_SOURCE_DIR}/unittests/*/*.cpp")
     list(APPEND CLICE_TEST_SOURCES ${TEST_SRC_FILES})
 
     add_executable(clice-tests ${CLICE_TEST_SOURCES} ${SRC_FILES})
-    target_include_directories(clice-tests PRIVATE
-        "${CMAKE_SOURCE_DIR}/deps/googletest/googletest/include"
-    )
+
+    # find googletest
+    find_package(GTest QUIET)
+    if(NOT GTest_FOUND)
+        message(STATUS "GoogleTest not found, fetching from https://github.com/google/googletest")
+
+        # Google suggests using main branch for the latest version
+        FetchContent_Declare(
+            googletest
+            URL https://github.com/google/googletest/archive/refs/heads/main.zip
+        )
+
+        set(BUILD_GMOCK OFF CACHE INTERNAL "")
+        set(INSTALL_GTEST OFF CACHE INTERNAL "")
+        set(GTEST_HAS_ABSL OFF CACHE INTERNAL "")
+
+        FetchContent_MakeAvailable(googletest)
+    endif()
+
     target_link_libraries(clice-tests PRIVATE 
         clice-core
-        gtest_main
-        uv
+        GTest::gtest_main
+        libuv::libuv
     )
+
+    # enable gtest discovery
+    include(GoogleTest)
+    gtest_discover_tests(clice-tests)
 endif()
 
+# config clice package
+install(TARGETS clice
+    EXPORT clice-targets
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
 
+install(EXPORT clice-targets
+    FILE clice-targets.cmake
+    NAMESPACE clice::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/clice
+)
+
+# generate clice-config.cmake
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/clice-config.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/clice-config.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/clice
+)
+
+write_basic_package_version_file(
+    clice-config-version.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+# install clice-config.cmake and clice-config-version.cmake
+install(FILES
+    ${CMAKE_SOURCE_DIR}/clice-config.cmake
+    ${CMAKE_BINARY_DIR}/clice-config-version.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/clice
+)
+
+# install header files
+install(
+    DIRECTORY ${CMAKE_SOURCE_DIR}/include/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/clice
+)
