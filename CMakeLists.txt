@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 project(CLICE_PROJECT VERSION 0.1.0 LANGUAGES CXX)
 
 include(FetchContent)
+INCLUDE(FindPackageHandleStandardArgs)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 include(CheckCXXCompilerFlag)
@@ -20,7 +21,6 @@ option(CLICE_ENABLE_TEST "Build clice unit tests" OFF)
 
 # find LLVM and clang
 include(cmake/FindLLVM.cmake)
-message(STATUS "Found LLVM: ${LLVM_DIR}, Version: ${LLVM_PACKAGE_VERSION}")
 
 # build clice core part as library
 file(GLOB_RECURSE CLICE_CORE_SOURCES
@@ -42,7 +42,7 @@ add_library(clice::core ALIAS clice-core)
 target_compile_features(clice-core PUBLIC cxx_std_23)
 
 # use pre-compiled headers to speed up compilation
-target_precompile_headers(clice-core PRIVATE 
+target_precompile_headers(clice-core PRIVATE
     "${CMAKE_SOURCE_DIR}/include/Compiler/Clang.h"
 )
 
@@ -54,7 +54,21 @@ target_include_directories(clice-core PUBLIC
 )
 
 # compile options for clice-core
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+if(MSVC)
+    # disable RTTI and exceptions
+    target_compile_options(clice-core PUBLIC "/GR-" "/EHs-")
+    target_compile_definitions(clice-core PUBLIC "_HAS_EXCEPTIONS=0")
+
+    # enable address sanitizer if supported
+    if(CLICE_ENABLE_ASAN)
+        check_cxx_compiler_flag("/fsanitize=address" HAS_ASAN)
+        if(NOT HAS_ASAN)
+            message(WARNING "Address sanitizer is required but not supported by the compiler")
+        else()
+            target_compile_options(clice-core PRIVATE "/fsanitize=address")
+        endif()
+    endif()
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     # disable RTTI and exceptions
     target_compile_options(clice-core PUBLIC "-fno-rtti" "-fno-exceptions")
 
@@ -63,9 +77,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         check_cxx_compiler_flag("-fsanitize=address" HAS_ASAN)
         if(NOT HAS_ASAN)
             message(WARNING "Address sanitizer is required but not supported by the compiler")
+        else()
+            target_compile_options(clice-core PRIVATE "-fsanitize=address")
         endif()
-
-        target_compile_options(clice-core PRIVATE "-fsanitize=address")
     endif()
 endif()
 
@@ -105,32 +119,14 @@ if(CLICE_ENABLE_TEST)
     list(APPEND CLICE_TEST_SOURCES ${TEST_SRC_FILES})
 
     add_executable(clice-tests ${CLICE_TEST_SOURCES} ${SRC_FILES})
-
-    # find googletest
-    find_package(GTest QUIET)
-    if(NOT GTest_FOUND)
-        message(STATUS "GoogleTest not found, fetching from https://github.com/google/googletest")
-
-        # Google suggests using main branch for the latest version
-        FetchContent_Declare(
-            googletest
-            URL https://github.com/google/googletest/archive/refs/heads/main.zip
-        )
-
-        set(BUILD_GMOCK OFF CACHE INTERNAL "")
-        set(INSTALL_GTEST OFF CACHE INTERNAL "")
-        set(GTEST_HAS_ABSL OFF CACHE INTERNAL "")
-
-        FetchContent_MakeAvailable(googletest)
-    endif()
-
-    target_link_libraries(clice-tests PRIVATE 
+    target_link_libraries(clice-tests PRIVATE
         clice-core
-        GTest::gtest_main
         libuv::libuv
+        GTest::gtest_main
     )
 
-    # enable gtest discovery
+    # introduce gtest for unit testing
+    include(cmake/FindGoogleTest.cmake)
     include(GoogleTest)
     gtest_discover_tests(clice-tests)
 endif()
