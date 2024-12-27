@@ -2,20 +2,8 @@ cmake_minimum_required(VERSION 3.22)
 
 project(CLICE_PROJECT VERSION 0.1.0 LANGUAGES CXX)
 
-include(FetchContent)
-INCLUDE(FindPackageHandleStandardArgs)
-include(GNUInstallDirs)
-include(CMakePackageConfigHelpers)
-include(CheckCXXCompilerFlag)
-
-# CMake policy CMP0135 controls extraction behavior of the FetchContent module.
-if(POLICY CMP0135)
-	cmake_policy(SET CMP0135 NEW)
-	set(CMAKE_POLICY_DEFAULT_CMP0135 NEW)
-endif()
-
 # build options
-option(CLICE_BUILD_SHARED_LIBS "Build clice core library as shared library" ON)
+option(CLICE_BUILD_SHARED_LIBS "Build clice core library as shared library" OFF)
 option(CLICE_ENABLE_ASAN "Enable address sanitizer for clice core library" OFF)
 option(CLICE_ENABLE_TEST "Build clice unit tests" OFF)
 
@@ -54,6 +42,8 @@ target_include_directories(clice-core PUBLIC
 )
 
 # compile options for clice-core
+include(CheckCXXCompilerFlag)
+
 if(MSVC)
     # disable RTTI and exceptions
     target_compile_options(clice-core PUBLIC "/GR-" "/EHs-")
@@ -132,6 +122,9 @@ if(CLICE_ENABLE_TEST)
 endif()
 
 # config clice package
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
 install(TARGETS clice
     EXPORT clice-targets
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

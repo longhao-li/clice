@@ -1,3 +1,5 @@
+include(FindPackageHandleStandardArgs)
+
 # find libuv
 find_path(LIBUV_INCLUDE_DIR NAMES uv.h)
 find_library(LIBUV_LIBRARIES NAMES uv libuv)
@@ -17,6 +19,8 @@ if(LIBUV_FOUND)
     target_include_directories(libuv INTERFACE ${LIBUV_INCLUDE_DIR})
     target_link_libraries(libuv INTERFACE ${LIBUV_LIBRARIES})
 else()
+    include(FetchContent)
+
     message(STATUS "libuv not found, fetching from https://github.com/libuv/libuv")
     FetchContent_Declare(libuv
         GIT_REPOSITORY https://github.com/libuv/libuv.git

@@ -1,8 +1,15 @@
 find_package(GTest QUIET)
 if(NOT GTest_FOUND)
-    message(STATUS "GoogleTest not found, fetching from https://github.com/google/googletest")
+    include(FetchContent)
+
+    # CMake policy CMP0135 controls extraction behavior of the FetchContent module.
+    if(POLICY CMP0135)
+        cmake_policy(SET CMP0135 NEW)
+        set(CMAKE_POLICY_DEFAULT_CMP0135 NEW)
+    endif()
 
     # Google suggests using main branch for the latest version
+    message(STATUS "GoogleTest not found, fetching from https://github.com/google/googletest")
     FetchContent_Declare(googletest
         URL https://github.com/google/googletest/archive/refs/heads/main.zip
         FIND_PACKAGE_ARGS NAMES GTest
